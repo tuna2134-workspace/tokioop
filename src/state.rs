@@ -99,6 +99,7 @@ pub struct FdRecord {
 
 /// A fired I/O notification waiting for the loop batch to execute the
 /// Python-level reader/writer callback.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub enum IoCompletion {
     /// Classic watcher firing: run `cb(*args)` from the slot, then release
     /// the watcher task via the shared rendezvous.
@@ -124,6 +125,7 @@ pub enum IoCompletion {
 }
 
 /// Payload read by a drain-mode watcher task.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub enum IoData {
     /// One UDP datagram. `b""` payloads are real empty datagrams.
     UdpDatagram { payload: Vec<u8>, addr: AddrRepr },
@@ -141,6 +143,7 @@ pub enum IoData {
 /// A datagram source address in GIL-free form; converted to the usual
 /// asyncio address tuple at batch time.
 #[derive(Clone)]
+#[cfg_attr(not(unix), allow(dead_code))]
 pub enum AddrRepr {
     Inet(std::net::SocketAddr),
     Unix(Vec<u8>),

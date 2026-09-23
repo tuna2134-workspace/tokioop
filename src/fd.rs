@@ -14,6 +14,7 @@ use crate::state::LoopState;
 
 /// Drain flavor for [`add_drain_watcher`](imp::add_drain_watcher).
 #[derive(Clone, Copy)]
+#[cfg_attr(not(unix), allow(dead_code))]
 pub enum DrainKind {
     Udp,
     Tcp { chunk: usize },
