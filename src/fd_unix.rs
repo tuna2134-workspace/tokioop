@@ -381,20 +381,14 @@ fn udp_recvfrom(dup_fd: RawFd, buf: &mut [u8]) -> std::io::Result<(usize, AddrRe
     }
 }
 
-/// Raw IPv6 address bytes. Linux exposes `s6_addr` directly; other unixes
-/// nest it in the `__u6_addr` union.
-#[cfg(target_os = "linux")]
+/// Raw IPv6 address bytes. `in6_addr` is 16 bytes on every platform, but
+/// the field layout differs (Linux: `s6_addr`; Apple/BSD: `__u6_addr`
+/// union), so read it as bytes instead of naming fields.
 fn in6_addr_bytes(a: &libc::in6_addr) -> [u8; 16] {
-    a.s6_addr
-}
-
-/// Raw IPv6 address bytes. Linux exposes `s6_addr` directly; other unixes
-/// nest it in the `__u6_addr` union.
-#[cfg(not(target_os = "linux"))]
-fn in6_addr_bytes(a: &libc::in6_addr) -> [u8; 16] {
-    // SAFETY: reading the active union member is fine — all members share
-    // the same 16 bytes.
-    unsafe { a.__u6_addr.__u6_addr8 }
+    const _: () = assert!(std::mem::size_of::<libc::in6_addr>() == 16);
+    // SAFETY: `in6_addr` is exactly 16 bytes; reading them as a byte
+    // array is valid on all platforms.
+    unsafe { *(a as *const _ as *const [u8; 16]) }
 }
 
 fn parse_addr(storage: &libc::sockaddr_storage, len: usize) -> AddrRepr {    match storage.ss_family as libc::c_int {
