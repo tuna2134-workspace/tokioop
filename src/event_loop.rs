@@ -546,8 +546,7 @@ impl TokioopLoop {
             .thread_name("tokioop-loop")
             .build()
             .map_err(|e| PyRuntimeError::new_err(format!("failed to create Tokio runtime: {e}")))?;
-        // Resolve Task/Future classes once (see LoopState docs).
-        let task_cls = py
+        // Resolve Task/Future classes once (see LoopState docs).        let task_cls = py
             .import("asyncio.tasks")?
             .getattr("Task")?
             .unbind();
