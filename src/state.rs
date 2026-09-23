@@ -186,6 +186,10 @@ pub struct LoopState {
     /// Number of live fd watchers. Advisory fast path: the loop skips
     /// `yield_now` when no Tokio watcher task can have pending work.
     pub n_watchers: AtomicU64,
+    /// Linger-before-park budget in nanoseconds (env `TOKIOOP_LINGER_NS`,
+    /// default 100_000): bounded yield+recheck window that catches cascade
+    /// completions without a full park/wake cycle. 0 disables lingering.
+    pub linger_ns: u64,
 
     /// Pre-run `sys.get_asyncgen_hooks()` value, restored afterwards.
     pub old_hooks: Mutex<Option<Py<PyAny>>>,
