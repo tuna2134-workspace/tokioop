@@ -578,6 +578,10 @@ impl TokioopLoop {
                 n_batches: AtomicU64::new(0),
                 n_parks: AtomicU64::new(0),
                 n_watchers: AtomicU64::new(0),
+                linger_ns: std::env::var("TOKIOOP_LINGER_NS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(100_000),
                 task_cls,
                 future_cls,
             }),
