@@ -275,11 +275,6 @@ pub(crate) fn run_batch(py: Python, state: &LoopState) {
 // ---------------------------------------------------------------------------
 
 async fn run_main(state: Arc<LoopState>) {
-    // Consecutive no-park iterations (saturate-spin). `yield_now` hands
-    // the runtime to woken watcher tasks for fairness, but at ~0.5-1µs a
-    // yield every iteration is pure overhead on compute-only bursts, so it
-    // is amortized: park cycles (the common case) drive the runtime anyway.
-    let mut spin: u32 = 0;
     loop {
         Python::attach(|py| run_batch(py, &state));
 
@@ -301,13 +296,11 @@ async fn run_main(state: Arc<LoopState>) {
             // NOTE: no amortization here: woken tasks only run at park or
             // yield points, so skipping yields delays their next fire by
             // whole spin windows (head-of-line per connection).
-            spin = spin.wrapping_add(1);
             if state.n_watchers.load(Ordering::Relaxed) != 0 {
                 tokio::task::yield_now().await;
             }
             continue;
         }
-        spin = 0;
         // Park until: a wakeup (threadsafe schedule / I/O / stop) or the
         // next timer deadline. `Notify` stores a permit, so a wakeup that
         // lands between the checks above and this park is never lost.

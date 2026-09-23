@@ -116,14 +116,50 @@ unmodified (compat win).
 
 ### 7. FastAPI + uvicorn — 1500 reqs x 6 conns, identical app
 
-| loop    | throughput | median |
-|---------|------------|--------|
-| asyncio | 2.64 k/s   | 0.568 s |
-| uvloop  | 2.60 k/s   | 0.578 s |
-| tokioop | 2.62 k/s   | 0.573 s |
+| loop    | throughput (typical band) |
+|---------|---------------------------|
+| asyncio | 2.6-2.9 k/s               |
+| uvloop  | 2.6-2.7 k/s               |
+| tokioop | 2.6-2.8 k/s               |
 
 Parity (framework-dominated): the same unmodified FastAPI app serves
 identically on all three loops.
+
+### 8. Connection scale — echo, streams (spec §19 levels)
+
+| conns | asyncio | uvloop | tokioop | tokioop maxrss |
+|-------|---------|--------|---------|----------------|
+| 10    | ~19k    | ~33k   | ~19k    | —              |
+| 100   | ~8k     | ~19k   | ~16k    | 33MB           |
+| 1000  | ~11k    | ~22k   | ~12k    | 46MB           |
+| 10000 | ~7k     | ~11k   | ~7k     | 54MB           |
+
+(msg/s; single runs, noisy host.) tokioop matches asyncio at every scale
+with no blowup (fd count stable, no leaks); uvloop leads ~1.6x throughout.
+Task buffers are lazily-faulted (virtual until touched), so resident memory
+stays modest even with 256KB chunks × thousands of watchers.
+
+### 9. Connection setup rate — 300 concurrent connects
+
+| loop    | conn/s |
+|---------|--------|
+| asyncio | 274    |
+| uvloop  | 275    |
+| tokioop | 270    |
+
+Parity: setup is TCP-handshake-bound, not loop-bound.
+
+### 10. Per-op microbenchmarks (best of 5, ns)
+
+| op | asyncio | uvloop | tokioop |
+|----|---------|--------|---------|
+| `create_future` | 356 | 307 | 440-714 |
+| `call_soon` (schedule only) | 975 | 513 | **253** |
+| add/remove watcher | 5279 | 7491 | 5542 |
+
+Our `call_soon` is 2-4x faster (no Handle traceback/source overhead);
+`create_future` trails ~1.4x (Rust-call + kwargs dict vs pure-Python call;
+~130ns absolute — negligible per message).
 
 ## Optimization log (benchmark-driven, before → after)
 
@@ -169,15 +205,18 @@ assumed):
   gap is not in our transport port;
 - per-op microbenchmarks favor us (`call_soon` 253ns vs 513ns uvloop,
   per-fire 11.6µs vs 15.6µs asyncio);
-- raw syscalls here cost ~6µs (send) / ~40µs (64KB recv): the kernel floor
-  dominates every loop, and only fewer Python transitions per message can
-  beat it — which is exactly uvloop's Cython transports.
+- raw syscalls here cost ~6µs (send): the kernel floor dominates every
+  loop, and only fewer Python transitions per message can beat it — which
+  is exactly uvloop's Cython transports (verified reading their `.pyx`:
+  direct `write()` syscalls, zero-copy `PyBytes_AS_STRING` fast path,
+  C-level transport state; LD_PRELOAD syscall counting proves identical
+  2+2 profiles, so no coalescing/handicap on either side).
 
 Remaining delta is C-transition density per message that only C/Rust-level
 transports close. Further: protocol-aware write batching would trade
-latency and diverge from CPython send semantics — deferred. Per-op microbenchmarks (`call_soon` 253ns vs 513ns uvloop,
-`create_future` 440ns vs 307ns, add/remove tied) confirm no single op
-explains it — it is emergent density, only closable in C/Rust transports.
+latency and diverge from CPython send semantics — deferred. A no-park
+spinner control (parks=0 via a background `sleep(0)` task) measures
+identically, confirming park/wake is not the cost center.
 
 **`call_soon` chain — closed (was 0.89x, now 2.0x).** Per-iteration fixed
 costs were dominated by an unconditional `yield_now` (~0.5-1µs). Fixed by
