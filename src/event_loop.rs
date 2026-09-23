@@ -314,7 +314,7 @@ async fn run_main(state: Arc<LoopState>) {
         if linger_budget > 0 {
             let start = Instant::now();
             let mut i = 0u32;
-            linger: loop {
+            'linger: loop {
                 // Yield first: parked watcher tasks and the runtime itself
                 // only progress here; the very first check would starve them.
                 if i % 2 == 0 {
@@ -329,10 +329,10 @@ async fn run_main(state: Arc<LoopState>) {
                     || !state.io.is_empty()
                     || timers_due(&state)
                 {
-                    break linger;
+                    break 'linger;
                 }
                 if start.elapsed().as_nanos() as u64 >= linger_budget {
-                    break linger;
+                    break 'linger;
                 }
             }
             // Re-check under the same conditions as the main recheck: work
@@ -546,7 +546,8 @@ impl TokioopLoop {
             .thread_name("tokioop-loop")
             .build()
             .map_err(|e| PyRuntimeError::new_err(format!("failed to create Tokio runtime: {e}")))?;
-        // Resolve Task/Future classes once (see LoopState docs).        let task_cls = py
+        // Resolve Task/Future classes once (see LoopState docs).
+        let task_cls = py
             .import("asyncio.tasks")?
             .getattr("Task")?
             .unbind();
