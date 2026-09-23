@@ -1,0 +1,20 @@
+# Cross-compilation setup for `cross` (https://github.com/cross-rs/cross).
+#
+# The Rust extension links against CPython via PyO3. When cross-checking or
+# cross-building (e.g. for targets CI wheels cover), PyO3 needs the target
+# Python version up front since no target interpreter is available:
+#
+#   PYO3_CROSS_PYTHON_VERSION=3.13 cross check --target aarch64-unknown-linux-gnu
+#
+# Notes:
+# - `cargo check` does not link, so no target libpython dir is required.
+# - Full wheel builds keep going through maturin (see .github/workflows/CI.yml),
+#   which configures the interpreter itself; this file only affects `cross`.
+# - Windows targets have no `cross` Docker image; CI builds those wheels
+#   natively via maturin-action. `cargo check --target <windows>` with the
+#   variables below still validates platform cfg gates locally (no link).
+[build.env]
+passthrough = [
+    "PYO3_CROSS_PYTHON_VERSION",
+    "PYO3_CROSS_PYTHON_IMPLEMENTATION",
+]

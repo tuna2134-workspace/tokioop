@@ -89,6 +89,17 @@ futures constantly; a module import per call cost ~4µs).
 
 ## fd reactor (`src/fd.rs`, Linux-first)
 
+Platform layout: `src/fd.rs` holds the shared watcher bookkeeping plus a
+`#[cfg(unix)]` / `#[cfg(not(unix))]` dispatch to `fd_unix.rs` (Tokio
+`AsyncFd` reactor) or `fd_stub.rs` (Windows: scheduling/timers/tasks work;
+fd I/O entry points raise `NotImplementedError`, asyncio's own failure
+mode for unsupported transports; an IOCP-backed reactor is future work).
+macOS/BSD ride the unix reactor with two adaptations: `O_NONBLOCK` on the
+owned dup at registration (no `MSG_DONTWAIT` there) and size-based IPv6
+byte reads (no `in6_addr` union field names). Cross-checked with
+`cargo check` / `cross check` for Windows (x86_64/aarch64 MSVC), macOS
+(aarch64), 32-bit + aarch64 Linux, and musl; see `Cross.toml`.
+
 Each watched direction gets: a `dup`'d fd owned by Rust (stable lifetime,
 race-free probing), an `AsyncFd` on the loop runtime, one Tokio task, and
 one shared rendezvous `Notify`. Tokio readiness is edge-triggered; asyncio
