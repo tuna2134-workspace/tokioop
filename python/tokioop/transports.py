@@ -150,8 +150,13 @@ class _SelectorTransport(transports._FlowControlMixin, transports.Transport):
         if self._paused or self._closing:
             # Re-paused or closed while flushing replay: stay unregistered.
             return
-        # (Re-)register; replace semantics make this uniform across modes.
-        self._register_reader()
+        # Re-register only if no live watcher exists. Drain-mode pause is
+        # flag-only (the task survives), so re-registering unconditionally
+        # would abort a live task whose already-pushed completions would
+        # then be skipped after consuming kernel data. Callback mode was
+        # removed on pause, so it always re-registers here.
+        if not self._loop._is_polling(self._sock_fd, False):
+            self._register_reader()
         if self._loop.get_debug():
             logger.debug("%r resumes reading", self)
 

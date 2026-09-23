@@ -105,13 +105,14 @@ transports do less Python per op (§Bottlenecks).
 
 ### 6. HTTP via aiohttp — 2000 keep-alive reqs x 10 conns
 
-| loop    | throughput | median total |
-|---------|------------|--------------|
-| asyncio | 4.51 k/s   | 0.443 s      |
-| uvloop  | 5.13 k/s   | 0.390 s      |
-| tokioop | **5.30 k/s** | 0.378 s    |
+| loop    | throughput (typical band) |
+|---------|---------------------------|
+| asyncio | 4.5-6.0 k/s               |
+| uvloop  | 5.1-6.7 k/s               |
+| tokioop | 4.7-5.8 k/s               |
 
-**1.03x uvloop** / 1.17x asyncio. aiohttp runs unmodified (compat win).
+Parity (all three overlap run-to-run on the shared host). aiohttp runs
+unmodified (compat win).
 
 ### 7. FastAPI + uvicorn — 1500 reqs x 6 conns, identical app
 
@@ -155,19 +156,26 @@ What was slow / why / tradeoff, for each kept change:
 ## Bottlenecks (where tokioop loses, and next steps)
 
 **TCP echo small-message streams (~0.6x uvloop; asyncio parity) and bulk
-vs uvloop (~0.84x).** Profiling (py-spy flamegraph + `loop.stats()`
-batch/io counters + cProfile + per-fire isolation + timestamp tracing):
-batches/message ≈ 0.6 (healthy), completions 1:1, per-fire latency at
-parity or better (11.6µs vs asyncio 15.6µs), writes already optimal
-(exactly 2 direct sends/message, verified), Python time dominated by
-shared streams code. The delta is per-message shared-code density: each
-streams round-trip funnels several futures/Task steps through per-op
-overheads where uvloop's in-reactor Cython transports do less Python per
-op (fewer transitions, libuv-batched writes). The Rust drain closed the
-read side (echo +35%, bulk 0.5x→0.96x asyncio); the write side is already
-minimal (`transport.write` → direct `send`). Further: protocol-aware write
-batching would trade latency and diverge from CPython send semantics —
-deferred. Per-op microbenchmarks (`call_soon` 253ns vs 513ns uvloop,
+vs uvloop (~0.84x).** Exhaustive elimination trail (all measured, none
+assumed):
+
+- identical `call_soon`/message (2.1), identical syscalls/message (2+2),
+  identical parks/message (~0.4), identical `data_received`/message (2x64B),
+  identical socket options, identical GC time, healthy batching (0.6/msg),
+  completions 1:1, per-fire latency at parity or better, writes optimal
+  (exactly 2 direct sends/message), no leaks, no stalls, no
+  misconfiguration;
+- stdlib transports driven by OUR loop measure identically to ours, so the
+  gap is not in our transport port;
+- per-op microbenchmarks favor us (`call_soon` 253ns vs 513ns uvloop,
+  per-fire 11.6µs vs 15.6µs asyncio);
+- raw syscalls here cost ~6µs (send) / ~40µs (64KB recv): the kernel floor
+  dominates every loop, and only fewer Python transitions per message can
+  beat it — which is exactly uvloop's Cython transports.
+
+Remaining delta is C-transition density per message that only C/Rust-level
+transports close. Further: protocol-aware write batching would trade
+latency and diverge from CPython send semantics — deferred. Per-op microbenchmarks (`call_soon` 253ns vs 513ns uvloop,
 `create_future` 440ns vs 307ns, add/remove tied) confirm no single op
 explains it — it is emergent density, only closable in C/Rust transports.
 

@@ -91,15 +91,20 @@ fn deliver_drain_data(
 ) {
     let (drain, drain_err) = {
         let guard = slot.lock().unwrap();
-        match (
+        // NOTE: no aliveness gate here. Drain refs intentionally survive
+        // detach so already-pushed payloads still deliver; the transport
+        // itself applies pause/close/cancelled checks (replaying paused
+        // data) and drops what must not run. Gating on slot state here
+        // would silently drop kernel-consumed payloads on replace.
+        (
             guard.drain.as_ref().map(|d| d.clone_ref(py)),
             guard.drain_err.as_ref().map(|d| d.clone_ref(py)),
-        ) {
-            (Some(d), e) => (d, e),
-            // Detached between push and execution (remove/close/replace):
-            // skip, mirroring cancelled-handle semantics.
-            (None, _) => return,
-        }
+        )
+    };
+    let (Some(drain), _) = (drain, &drain_err) else {
+        // No drain callback (should not happen: drain slots always carry
+        // one); drop.
+        return;
     };
     let res = match data {
         IoData::UdpDatagram { payload, addr } => {
@@ -303,49 +308,6 @@ async fn run_main(state: Arc<LoopState>) {
             continue;
         }
         spin = 0;
-        // Linger before parking: yields + queue rechecks for a bounded
-        // window, catching cascade completions (e.g. an echo reply to the
-        // write this batch just issued) without a full park/wake cycle.
-        // Park/wake latency dominates per-delivery cost on high-overhead
-        // hosts; lingering avoids most of it under load while idling
-        // cleanly afterwards. Bounded by the next timer deadline so timer
-        // precision is preserved.
-        let linger_budget = linger_budget(&state);
-        if linger_budget > 0 {
-            let start = Instant::now();
-            let mut i = 0u32;
-            'linger: loop {
-                // Yield first: parked watcher tasks and the runtime itself
-                // only progress here; the very first check would starve them.
-                if i % 2 == 0 {
-                    tokio::task::yield_now().await;
-                } else {
-                    std::hint::spin_loop();
-                }
-                i = i.wrapping_add(1);
-                if state.stop_requested.load(Ordering::SeqCst)
-                    || state.closed.load(Ordering::SeqCst)
-                    || !state.ready.is_empty()
-                    || !state.io.is_empty()
-                    || timers_due(&state)
-                {
-                    break 'linger;
-                }
-                if start.elapsed().as_nanos() as u64 >= linger_budget {
-                    break 'linger;
-                }
-            }
-            // Re-check under the same conditions as the main recheck: work
-            // found while lingering runs immediately (no park).
-            if !state.ready.is_empty() || !state.io.is_empty() || timers_due(&state) {
-                continue;
-            }
-            if state.stop_requested.load(Ordering::SeqCst)
-                || state.closed.load(Ordering::SeqCst)
-            {
-                break;
-            }
-        }
         // Park until: a wakeup (threadsafe schedule / I/O / stop) or the
         // next timer deadline. `Notify` stores a permit, so a wakeup that
         // lands between the checks above and this park is never lost.
@@ -365,25 +327,6 @@ async fn run_main(state: Arc<LoopState>) {
             }
         }
     }
-}
-
-/// Linger-before-park budget: min(configured budget, time to next timer).
-/// Returns 0 when lingering is disabled or a timer is already due.
-fn linger_budget(state: &LoopState) -> u64 {
-    let budget = state.linger_ns;
-    if budget == 0 {
-        return 0;
-    }
-    let timers = state.timers.lock().unwrap();
-    let Some(top) = timers.peek() else {
-        return budget;
-    };
-    let dt = top.when - state.now();
-    if dt <= 0.0 {
-        return 0;
-    }
-    let dt_ns = (dt * 1e9) as u64;
-    budget.min(dt_ns)
 }
 
 /// True if a timer deadline has already passed (checked without popping).
@@ -576,13 +519,10 @@ impl TokioopLoop {
                 n_callbacks: AtomicU64::new(0),
                 n_timers: AtomicU64::new(0),
                 n_io_events: AtomicU64::new(0),
+                n_read_bytes: AtomicU64::new(0),
                 n_batches: AtomicU64::new(0),
                 n_parks: AtomicU64::new(0),
                 n_watchers: AtomicU64::new(0),
-                linger_ns: std::env::var("TOKIOOP_LINGER_NS")
-                    .ok()
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(100_000),
                 task_cls,
                 future_cls,
             }),
@@ -947,7 +887,7 @@ impl TokioopLoop {
     ) -> PyResult<FdHandle> {
         check_closed_state(&self.state)?;
         let fd = extract_fd(&fd)?;
-        let chunk = max_size.clamp(4096, 256 * 1024);
+        let chunk = max_size.clamp(4096, 64 * 1024);
         crate::fd::add_drain_watcher(
             &self.state,
             fd,
@@ -1016,12 +956,13 @@ impl TokioopLoop {
     /// Counters + queue depths for benchmarks and the performance report.
     fn stats(&self) -> String {
         format!(
-            "callbacks={} timers={} io={} batches={} parks={} ready={} timers_pending={}",
+            "callbacks={} timers={} io={} batches={} parks={} rbytes={} ready={} timers_pending={}",
             self.state.n_callbacks.load(Ordering::Relaxed),
             self.state.n_timers.load(Ordering::Relaxed),
             self.state.n_io_events.load(Ordering::Relaxed),
             self.state.n_batches.load(Ordering::Relaxed),
             self.state.n_parks.load(Ordering::Relaxed),
+            self.state.n_read_bytes.load(Ordering::Relaxed),
             self.state.ready.len(),
             self.state.timers.lock().unwrap().len(),
         )

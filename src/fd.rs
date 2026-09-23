@@ -222,6 +222,7 @@ pub fn add_watcher(
         cb: Some((callback, args)),
         drain: None,
         drain_err: None,
+        dead: false,
         flag: Some(flag.clone()),
     }));
 
@@ -251,8 +252,7 @@ pub fn add_watcher(
                     f.store(true, Ordering::SeqCst);
                 }
                 s.cb = None;
-                s.drain = None;
-                s.drain_err = None;
+                s.dead = true;
             }
             // Replacing: one watcher out, one in — counter unchanged.
         } else {
@@ -293,8 +293,7 @@ pub fn detach_watcher(state: &LoopState, fd: i32, is_read: bool) -> bool {
             f.store(true, Ordering::SeqCst);
         }
         s.cb = None;
-        s.drain = None;
-        s.drain_err = None;
+        s.dead = true;
     }
     state.n_watchers.fetch_sub(1, Ordering::Relaxed);
     if record.reader.is_none() && record.writer.is_none() {
@@ -314,8 +313,7 @@ pub fn abort_all(state: &LoopState) {
                     f.store(true, Ordering::SeqCst);
                 }
                 s.cb = None;
-                s.drain = None;
-                s.drain_err = None;
+                s.dead = true;
             }
         }
     }
@@ -338,7 +336,7 @@ pub fn is_polling(state: &LoopState, fd: i32, is_read: bool) -> bool {
         Some(d) => d
             .slot
             .lock()
-            .map(|s| s.cb.is_some() || s.drain.is_some())
+            .map(|s| !s.dead && (s.cb.is_some() || s.drain.is_some()))
             .unwrap_or(false),
         None => false,
     }
@@ -512,9 +510,9 @@ async fn drain_task(
     // registering the server transport). Awaiting first would park forever
     // on that dead edge. Afterwards the flag is untouched-but-clear (fresh
     // registration), so the first real wait below parks genuinely.
-    if slot.lock().unwrap().drain.is_some() {
+    if !slot.lock().unwrap().dead {
         drain_loop(&state, dup_fd, &slot, &mut buf, kind, None).await;
-        if slot.lock().unwrap().drain.is_none() {
+        if slot.lock().unwrap().dead {
             return;
         }
     }
@@ -525,14 +523,14 @@ async fn drain_task(
             Err(_) => break, // closed / reactor gone
         };
         {
-            let alive = slot.lock().unwrap().drain.is_some();
+            let alive = !slot.lock().unwrap().dead;
             if !alive {
                 return; // removed or cancelled while parked
             }
         }
 
         drain_loop(&state, dup_fd, &slot, &mut buf, kind, Some(guard)).await;
-        if slot.lock().unwrap().drain.is_none() {
+        if slot.lock().unwrap().dead {
             return;
         }
     }
@@ -561,6 +559,7 @@ async fn drain_loop(
                 while n < UDP_QUANTUM {
                     match udp_recvfrom(dup_fd, buf) {
                         Ok((len, addr)) => {
+                            state.n_read_bytes.fetch_add(len as u64, Ordering::Relaxed);
                             state.io.push(IoCompletion::Data {
                                 slot: slot.clone(),
                                 data: IoData::UdpDatagram {
@@ -602,6 +601,7 @@ async fn drain_loop(
                         }
                         Ok(len) => {
                             bytes += len;
+                            state.n_read_bytes.fetch_add(len as u64, Ordering::Relaxed);
                             state.io.push(IoCompletion::Data {
                                 slot: slot.clone(),
                                 data: IoData::TcpChunk {
@@ -641,7 +641,7 @@ async fn drain_loop(
             // gone. Without the yield a persistently-EOF-readable fd would
             // spin without ever letting the batch process the removal.
             tokio::task::yield_now().await;
-            if slot.lock().unwrap().drain.is_none() {
+            if slot.lock().unwrap().dead {
                 return;
             }
             // Still registered (exotic): re-read (recv yields 0 again);
@@ -658,7 +658,7 @@ async fn drain_loop(
         // delivers what we pushed (pipelined latency + fairness under
         // flood), then keep draining without parking.
         tokio::task::yield_now().await;
-        if slot.lock().unwrap().drain.is_none() {
+        if slot.lock().unwrap().dead {
             return;
         }
     }
@@ -699,6 +699,7 @@ pub fn add_drain_watcher(
         cb: None,
         drain: Some(drain),
         drain_err: Some(drain_err),
+        dead: false,
         flag: Some(flag.clone()),
     }));
 
@@ -718,8 +719,7 @@ pub fn add_drain_watcher(
                     f.store(true, Ordering::SeqCst);
                 }
                 s.cb = None;
-                s.drain = None;
-                s.drain_err = None;
+                s.dead = true;
             }
         } else {
             state.n_watchers.fetch_add(1, Ordering::Relaxed);

@@ -66,18 +66,19 @@ impl Ord for TimerEntry {
 
 /// Mutable per-direction (read/write) state for a watched file descriptor.
 pub struct FdSlotState {
-    /// Current callback + args (callback mode), or `None` when
-    /// removed/cancelled.
+    /// Current callback + args (callback mode). Cleared on detach so
+    /// cancelled/replaced handles never run (asyncio `Handle` semantics).
     pub cb: Option<(Py<PyAny>, Py<PyTuple>)>,
-    /// Drain-mode delivery callback (drain mode), or `None` when
-    /// removed/cancelled. Invoked as `drain(data, addr)` (UDP),
-    /// `drain(data)` (TCP chunk) or `drain(b"")` (TCP EOF).
+    /// Drain-mode delivery callback. Intentionally KEPT on detach: already
+    /// pushed completions must still deliver (the transport itself applies
+    /// pause/close/cancelled checks and replays paused data), otherwise
+    /// kernel-consumed payloads would be silently dropped on replace.
     pub drain: Option<Py<PyAny>>,
-    /// Drain-mode error callback: invoked as `drain_err(exc)` with an
-    /// `OSError` for non-`WouldBlock` socket errors observed while
-    /// draining. The watcher stays registered (CPython reports per firing
-    /// and continues).
+    /// Drain-mode error callback (same lifetime as `drain`).
     pub drain_err: Option<Py<PyAny>>,
+    /// Set on detach (remove/close/replace/cancel). Drives `is_polling`
+    /// and prevents new work; in-flight drain payloads still deliver.
+    pub dead: bool,
     /// Cancellation flag of the currently-registered handle. Replaced (and
     /// the old flag set) on every `add_reader`/`add_writer` call, mirroring
     /// CPython cancelling the previous `Handle`.
@@ -186,10 +187,6 @@ pub struct LoopState {
     /// Number of live fd watchers. Advisory fast path: the loop skips
     /// `yield_now` when no Tokio watcher task can have pending work.
     pub n_watchers: AtomicU64,
-    /// Linger-before-park budget in nanoseconds (env `TOKIOOP_LINGER_NS`,
-    /// default 100_000): bounded yield+recheck window that catches cascade
-    /// completions without a full park/wake cycle. 0 disables lingering.
-    pub linger_ns: u64,
 
     /// Pre-run `sys.get_asyncgen_hooks()` value, restored afterwards.
     pub old_hooks: Mutex<Option<Py<PyAny>>>,
@@ -206,6 +203,8 @@ pub struct LoopState {
     pub n_callbacks: AtomicU64,
     pub n_timers: AtomicU64,
     pub n_io_events: AtomicU64,
+    /// Payload bytes read by drain tasks (for throughput analysis).
+    pub n_read_bytes: AtomicU64,
     pub n_batches: AtomicU64,
     /// Park/wake cycles (for latency analysis).
     pub n_parks: AtomicU64,

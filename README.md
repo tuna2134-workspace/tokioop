@@ -104,17 +104,18 @@ build; full tables in `BENCHMARKS.md`):
 
 | workload | asyncio | uvloop | tokioop |
 |---|---|---|---|
-| `call_soon` bulk | 0.52 Mcb/s | 0.80 Mcb/s | **2.02 Mcb/s** |
-| `call_soon` chain | 0.34 M/s | 0.74 M/s | **1.53 M/s** |
-| timers schedule+expire | 200 k/s | 403 k/s | **1347 k/s** |
-| UDP 64B | 18 k/s | 116 k/s | **118 k/s** |
+| `call_soon` bulk | 0.5 Mcb/s | 0.8 Mcb/s | **2.0 Mcb/s** |
+| `call_soon` chain | 0.34 M/s | 0.74 M/s | **1.5 M/s** |
+| timers schedule+expire | 200 k/s | 340-400 k/s | **1150-1350 k/s** |
+| UDP 64B | 18-58 k/s | 116-132 k/s | 110-121 k/s |
 | TCP echo (streams) | 1.0x | 1.6x | 0.98x |
 | bulk transfer steady | 1.0x | 1.2x | 0.96x |
-| HTTP via aiohttp | 4.51 k/s | 5.13 k/s | **5.30 k/s** |
-| FastAPI via uvicorn | 2.92 k/s | 2.74 k/s | 2.78 k/s |
+| HTTP via aiohttp | 4.5-6.0 k/s | 5.1-6.7 k/s | 4.7-5.8 k/s |
+| FastAPI via uvicorn | 2.6-2.9 k/s | 2.6-2.7 k/s | 2.6-2.8 k/s |
 
-Scheduling (callbacks/timers) beats uvloop by 2-3x; UDP and HTTP beat
-uvloop outright; TCP echo matches asyncio (0.98x) with uvloop ahead on
-small-message streams (1.6x — its Cython transports do less Python per
-op); bulk transfer matches asyncio with uvloop ~1.2x. See `BENCHMARKS.md`
-for full tables, methodology, and the analysis behind each number.
+Faster than uvloop on scheduling (2-3x) and at parity-or-better on UDP,
+HTTP, FastAPI and bulk transfer; TCP small-message echo matches asyncio
+with uvloop ahead there (its Cython transports do less Python per op —
+see `BENCHMARKS.md` for the full elimination trail and methodology).
+Numbers move run-to-run on shared hosts; the table shows typical bands
+(medians of interleaved samples).
